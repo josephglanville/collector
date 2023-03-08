@@ -18,6 +18,7 @@ COPY contrib/sslrootcert/rds-ca-2019-root.pem contrib/sslrootcert/rds-ca-2015-ro
 COPY contrib/docker-entrypoint.sh $HOME_DIR
 RUN chmod +x $HOME_DIR/docker-entrypoint.sh
 
+FROM bitnami/kubectl:1.23.14 as kubectl
 FROM alpine:3.15 as slim
 
 RUN apk add --no-cache ca-certificates tzdata
@@ -28,6 +29,8 @@ RUN adduser -D pganalyze pganalyze \
 
 COPY --from=base --chown=pganalyze:pganalyze /home/pganalyze/docker-entrypoint.sh /home/pganalyze/collector /home/pganalyze/
 COPY --from=base /usr/share/pganalyze-collector/sslrootcert/ /usr/share/pganalyze-collector/sslrootcert/
+
+COPY --from=kubectl /opt/bitnami/kubectl/bin/kubectl /usr/local/bin/
 
 VOLUME ["/state"]
 
