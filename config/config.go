@@ -133,6 +133,11 @@ type ServerConfig struct {
 	// on the specifed "hostname:port" for Postgres log messages
 	LogSyslogServer string `ini:"db_log_syslog_server"`
 
+	// Configure the collector to tail a container within a Kubernetes pod
+	LogKubernetesPod string `ini:"db_log_kubernetes_pod"`
+	// The container name within the kubernetes pod to tail
+	LogKubernetesContainer string `ini:"db_log_kubernetes_container"`
+
 	// Configures the collector to use the "pg_read_file" (superuser) or
 	// "pganalyze.read_log_file" (helper) function to retrieve log data
 	// directly over the Postgres connection. This only works when superuser

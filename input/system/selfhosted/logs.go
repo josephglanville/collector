@@ -134,6 +134,15 @@ func SetupLogTailForServer(ctx context.Context, wg *sync.WaitGroup, globalCollec
 	return setupLogLocationTail(ctx, server.Config.LogLocation, logStream, logger)
 }
 
+func SetupLogTailForPod(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.CollectionOpts, logger *util.Logger, server *state.Server, parsedLogStream chan state.ParsedLogStreamItem) error {
+	if globalCollectionOpts.DebugLogs || globalCollectionOpts.TestRun {
+		logger.PrintInfo("Setting up log tail for pod: %s, container: %s", server.Config.LogKubernetesPod, server.Config.LogKubernetesContainer)
+	}
+
+	logStream := setupLogTransformer(ctx, wg, server, globalCollectionOpts, logger, parsedLogStream)
+	return setupKubernetesTail(ctx, server.Config.LogKubernetesPod, server.Config.LogKubernetesContainer, logStream, logger)
+}
+
 // SetupLogTails - Sets up continuously running log tails for all servers with a
 // local log directory or file specified
 func SetupLogTails(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts state.CollectionOpts, logger *util.Logger, servers []*state.Server, parsedLogStream chan state.ParsedLogStreamItem) {
@@ -154,6 +163,16 @@ func SetupLogTails(ctx context.Context, wg *sync.WaitGroup, globalCollectionOpts
 			err := setupDockerTail(ctx, server.Config.LogDockerTail, logStream, prefixedLogger)
 			if err != nil {
 				prefixedLogger.PrintError("ERROR - %s", err)
+			}
+		} else if server.Config.LogKubernetesPod != "" && server.Config.LogKubernetesContainer != "" {
+			if globalCollectionOpts.DebugLogs || globalCollectionOpts.TestRun {
+				prefixedLogger.PrintInfo("Setting up kubectl logs tail for %s", server.Config.LogKubernetesPod)
+			}
+
+			logStream := setupLogTransformer(ctx, wg, server, globalCollectionOpts, prefixedLogger, parsedLogStream)
+			err := setupKubernetesTail(ctx, server.Config.LogKubernetesPod, server.Config.LogKubernetesContainer, logStream, prefixedLogger)
+			if err != nil {
+				prefixedLogger.PrintError("Error - %s", err)
 			}
 		} else if server.Config.LogSyslogServer != "" {
 			logStream := setupLogTransformer(ctx, wg, server, globalCollectionOpts, prefixedLogger, parsedLogStream)
@@ -366,6 +385,54 @@ func setupDockerTail(ctx context.Context, containerName string, out chan<- SelfH
 				}
 				return
 			}
+		}
+	}()
+
+	return nil
+}
+
+func setupKubernetesTail(ctx context.Context, podName string, containerName string, out chan<- SelfHostedLogStreamItem, prefixedLogger *util.Logger) error {
+	go func() {
+		for {
+			var cancelled bool
+			cmd := exec.CommandContext(ctx, "kubectl", "logs", podName, "-c", containerName, "-f", "--tail=0")
+			// Set a custom Cancel, so we can interpret the difference between the command exiting due to failure vs context cancellation
+			cmd.Cancel = func() error {
+				cancelled = true
+				return cmd.Process.Kill()
+			}
+
+			stdout, _ := cmd.StdoutPipe()
+			stderr, _ := cmd.StderrPipe()
+
+			scanner := bufio.NewScanner(stdout)
+			go func() {
+				for scanner.Scan() {
+					out <- SelfHostedLogStreamItem{Line: scanner.Text()}
+				}
+			}()
+
+			errScanner := bufio.NewScanner(stderr)
+			go func() {
+				for errScanner.Scan() {
+					prefixedLogger.PrintError("kubectl err: %s", errScanner.Text())
+				}
+			}()
+
+			if err := cmd.Start(); err != nil {
+				prefixedLogger.PrintError("Failed to start kubectl logs, err: %s", err.Error())
+				time.Sleep(1 * time.Second)
+				continue
+			}
+
+			processState, _ := cmd.Process.Wait()
+			if cancelled {
+				prefixedLogger.PrintVerbose("kubectl log tail received stop signal")
+				return
+			}
+			exitCode := processState.ExitCode()
+			prefixedLogger.PrintVerbose("kubectl logs exited with exitCode: %d, restarting", exitCode)
+			time.Sleep(1 * time.Second)
 		}
 	}()
 
